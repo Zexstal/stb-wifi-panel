@@ -25,14 +25,14 @@ Web panel ringan untuk kelola Wi-Fi di STB HG680P / Amlogic S905X yang jalan Arm
 Jalankan di STB sebagai `root`:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/USER/stb-wifi-panel/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Zexstal/stb-wifi-panel/main/install.sh | bash
 # ganti USER dengan username GitHub kamu
 ```
 
 Atau manual:
 
 ```bash
-git clone https://github.com/USER/stb-wifi-panel.git
+git clone https://github.com/Zexstal/stb-wifi-panel.git
 cd stb-wifi-panel
 chmod +x install.sh
 sudo ./install.sh
