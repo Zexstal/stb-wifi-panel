@@ -43,6 +43,51 @@ def get_networks(wifi_on, hs_active):
     nets.sort(key=lambda x: x["sig"], reverse=True)
     return nets
 
+def get_known():
+    out = run_cmd("nmcli", "-t", "-f", "NAME,TYPE,UUID", "connection", "show")
+    known = []
+    for line in out.splitlines():
+        # NAME may contain ':', so split from right: TYPE and UUID have no ':'
+        # format is NAME:TYPE:UUID — rsplit max 2
+        if line.count(":") < 2:
+            continue
+        name, conn_type, uuid = line.rsplit(":", 2)
+        name, conn_type, uuid = name.strip(), conn_type.strip(), uuid.strip()
+        if conn_type != "802-11-wireless":
+            continue
+        if name == "Hotspot" or name.startswith("STB-Hotspot"):
+            continue
+        if not name:
+            continue
+        autoconnect = run_cmd("nmcli", "-g", "connection.autoconnect", "connection", "show", uuid).strip()
+        ts = run_cmd("nmcli", "-g", "connection.timestamp", "connection", "show", uuid).strip()
+        try:
+            ts_int = int(ts) if ts else 0
+        except ValueError:
+            ts_int = 0
+        known.append({"ssid": name, "uuid": uuid, "autoconnect": autoconnect == "yes", "last_used": ts, "last_used_int": ts_int})
+    known.sort(key=lambda x: x["last_used_int"], reverse=True)
+    return known
+
+def format_ts(ts_str):
+    try:
+        ts = int(ts_str)
+        if ts == 0:
+            return "never"
+    except (ValueError, TypeError):
+        return "-"
+    from datetime import datetime
+    delta = datetime.now() - datetime.fromtimestamp(ts)
+    if delta.days > 30:
+        return f"{delta.days // 30}bln lalu"
+    if delta.days > 0:
+        return f"{delta.days}hr lalu"
+    hours = delta.seconds // 3600
+    if hours > 0:
+        return f"{hours}jam lalu"
+    mins = (delta.seconds // 60) % 60
+    return f"{mins}mnt lalu" if mins > 0 else "baru saja"
+
 HTML = r"""
 <!doctype html>
 <html lang="id">
@@ -127,6 +172,17 @@ input:checked + .slider:before { transform: translateX(20px); }
 .btn-disc { background: #ef5350; color: white; box-shadow: 0 2px 6px rgba(239,83,80,0.3); }
 .btn-disc:hover:not(:disabled) { background: #e53935; transform: translateY(-1px); }
 .footer { text-align: center; color: #aaa; font-size: 0.8em; margin-top: 24px; }
+/* Known networks card */
+.known-card { background: white; border-radius: 12px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.1); overflow-x: auto; margin-top: 16px; }
+.known-card .net-head { background: #fff3e0; border-bottom-color: #ffe0b2; color: #ef6c00; }
+.known-card .net-row { grid-template-columns: 1fr 90px 100px 220px; }
+.known-card .net-head { grid-template-columns: 1fr 90px 100px 220px; }
+.btn-known { background: #1976d2; color: white; border: none; padding: 6px 10px; border-radius: 6px; cursor: pointer; font-size: 0.75em; font-weight: 700; }
+.btn-known:hover { background: #1565c0; }
+.btn-forget { background: #ef5350; color: white; border: none; padding: 6px 10px; border-radius: 6px; cursor: pointer; font-size: 0.75em; font-weight: 700; }
+.btn-forget:hover { background: #e53935; }
+.btn-auto { background: #78909c; color: white; border: none; padding: 6px 8px; border-radius: 6px; cursor: pointer; font-size: 0.7em; font-weight: 700; }
+.btn-auto.on { background: #4caf50; }
 @media (max-width: 700px) { .net-card-inner { min-width: 600px; } }
 </style>
 </head>
@@ -186,8 +242,8 @@ input:checked + .slider:before { transform: translateX(20px); }
       <div class="net-sig">
         <div class="sig-bar" style="height:6px; background:{% if n.sig >= 20 %}#4caf50{% else %}#e0e0e0{% endif %}"></div>
         <div class="sig-bar" style="height:10px; background:{% if n.sig >= 40 %}#4caf50{% else %}#e0e0e0{% endif %}"></div>
-        <div class="sig-bar" style="height:14px; background:{% if n.sig >= 70 %}#4caf50{% elif n.sig >= 40 %}#ff9800{% else %}#e0e0e0{% endif %}"></div>
-        <div class="sig-bar" style="height:18px; background:{% if n.sig >= 85 %}#4caf50{% elif n.sig >= 55 %}#ff9800{% elif n.sig >= 25 %}#f44336{% else %}#e0e0e0{% endif %}"></div>
+        <div class="sig-bar" style="height:14px; background:{% if n.sig >= 70 %}#4caf50{% elif n.sig >= 40 %}#ff9800{% else %}#e0e0e0{% endif %}\"></div>
+        <div class="sig-bar" style="height:18px; background:{% if n.sig >= 85 %}#4caf50{% elif n.sig >= 55 %}#ff9800{% elif n.sig >= 25 %}#f44336{% else %}#e0e0e0{% endif %}\"></div>
         <span class="sig-pct">{{ n.sig }}%</span>
       </div>
       <div class="net-sec"><span class="{% if n.sec in ['', '--', ''] %}open{% endif %}">{{ n.sec if n.sec else 'Open' }}</span></div>
@@ -214,6 +270,41 @@ input:checked + .slider:before { transform: translateX(20px); }
     <form method="post" action="/rescan" style="display:inline"><button class="btn-scan" type="submit" {{ 'disabled' if not wifi_on or hs_active else '' }}>&#21bb; Rescan Networks</button></form>
     <form method="post" action="/disconnect" style="display:inline"><button class="btn-disc" type="submit" {{ 'disabled' if hs_active else '' }}>&#2716; Disconnect</button></form>
   </div>
+
+  <div class="known-card">
+    <div class="net-head">
+      <div>Saved Networks</div>
+      <div style="text-align:center">Auto</div>
+      <div style="text-align:center">Last Used</div>
+      <div style="text-align:center">Action</div>
+    </div>
+    {% for k in known %}
+    <div class="net-row">
+      <div class="net-name" title="{{ k.ssid }}">{{ k.ssid }} {% if k.ssid == active %}<span style="color:#4caf50;font-weight:700;font-size:0.85em">(connected)</span>{% endif %}</div>
+      <div class="net-sec"><span class="{% if k.autoconnect %}open{% endif %}">{{ "ON" if k.autoconnect else "OFF" }}</span></div>
+      <div class="net-sig"><span class="sig-pct">{{ format_ts(k.last_used) }}</span></div>
+      <div class="net-act" style="justify-content:center">
+        <form method="post" action="/known/reconnect" style="display:inline">
+          <input type="hidden" name="uuid" value="{{ k.uuid }}">
+          <button type="submit" class="btn-known">Connect</button>
+        </form>
+        <form method="post" action="/known/autoconnect" style="display:inline">
+          <input type="hidden" name="uuid" value="{{ k.uuid }}">
+          <input type="hidden" name="state" value="{{ 'no' if k.autoconnect else 'yes' }}">
+          <button type="submit" class="btn-auto {{ 'on' if k.autoconnect else '' }}">{{ "ON" if k.autoconnect else "OFF" }}</button>
+        </form>
+        <form method="post" action="/forget" style="display:inline" onsubmit="return confirm('Forget {{ k.ssid }}? Hapus password tersimpan.')">
+          <input type="hidden" name="uuid" value="{{ k.uuid }}">
+          <button type="submit" class="btn-forget">Forget</button>
+        </form>
+      </div>
+    </div>
+    {% endfor %}
+    {% if not known %}
+    <div class="empty-msg">Belum ada jaringan tersimpan. Connect di atas untuk menyimpan.</div>
+    {% endif %}
+  </div>
+
   <div class="footer">STB WiFi Panel &copy; {{ year }}</div>
 </div>
 <script>
@@ -240,8 +331,9 @@ def index():
     connected = (state == "connected")
     ip = run_cmd("hostname", "-I").split()[0] if run_cmd("hostname", "-I") else "?"
     nets = get_networks(wifi_on, hs_active)
+    known = get_known()
     from datetime import datetime
-    return render_template_string(HTML, state=state.capitalize(), connected=connected, active=ssid, ip=ip, nets=nets, year=datetime.now().year, wifi_on=wifi_on, hs_active=hs_active, hs_ssid=hs_ssid)
+    return render_template_string(HTML, state=state.capitalize(), connected=connected, active=ssid, ip=ip, nets=nets, year=datetime.now().year, wifi_on=wifi_on, hs_active=hs_active, hs_ssid=hs_ssid, known=known, format_ts=format_ts)
 
 @app.route("/connect", methods=["POST"])
 def connect():
@@ -291,6 +383,28 @@ def hotspot_stop():
     run_cmd("nmcli", "connection", "down", "Hotspot")
     run_cmd("nmcli", "connection", "delete", "Hotspot")
     run_cmd("nmcli", "radio", "wifi", "on")
+    return redirect("/")
+
+@app.route("/forget", methods=["POST"])
+def forget():
+    uuid = request.form.get("uuid", "").strip()
+    if uuid:
+        run_cmd("nmcli", "connection", "delete", uuid)
+    return redirect("/")
+
+@app.route("/known/autoconnect", methods=["POST"])
+def known_autoconnect():
+    uuid = request.form.get("uuid", "").strip()
+    state = request.form.get("state", "").strip()
+    if uuid and state in ("yes", "no"):
+        run_cmd("nmcli", "connection", "modify", uuid, "connection.autoconnect", state)
+    return redirect("/")
+
+@app.route("/known/reconnect", methods=["POST"])
+def known_reconnect():
+    uuid = request.form.get("uuid", "").strip()
+    if uuid:
+        run_cmd("nmcli", "connection", "up", uuid, "ifname", "wlan0")
     return redirect("/")
 
 if __name__ == "__main__":
